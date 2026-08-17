@@ -78,10 +78,11 @@ See [FIRMWARE.md](docs/FIRMWARE.md) and [BUILDING.md](docs/BUILDING.md).
 The repository contains the files required to build the device yourself:
 
 * [Schematic](Schematic/Scheme%20ESPidi.jpg)
-* [GERBER file — main PCB](/PCB/Gerber_ESPIDI_PCB_ESPIDI-BLANK.zip)
-* [GERBER file — panel](/PCB/Gerber_ESPidi_BreadBoard_PCB_ESPidi_BreadBoard.zip)
+* [GERBER file - main PCB](/PCB/Gerber_ESPIDI_PCB_ESPIDI-BLANK.zip)
+* [GERBER file - panel](/PCB/Gerber_ESPidi_BreadBoard_PCB_ESPidi_BreadBoard.zip)
 * [BOM](/BOM/BOM.md)
 * [Firmware](/Firmware/ESPidi/)
+* [Hardware](/HARDWARE.MD)
 
 ## Community
 
@@ -189,6 +190,7 @@ ESPidi подходит как для обычной embedded-разработк
 * [GERBER файл - панель](/PCB/Gerber_ESPidi_BreadBoard_PCB_ESPidi_BreadBoard.zip)
 * [BOM](/BOM/BOM.md)
 * [Прошивка](/Firmware/ESPidi/)
+* [Подключения](/HARDWARE.MD)
 
 ## Сообщество
 
