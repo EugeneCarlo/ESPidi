@@ -1,4 +1,4 @@
-# ESPidi
+# ESPidi - MIDI Hardware Unit
 
 **An open-source ESP32-C3 hardware platform for building MIDI controllers and expanding the capabilities of existing instruments.**
 
@@ -108,7 +108,7 @@ See [LICENSE](LICENSE) for the complete license text.
 
 # Русский
 
-## ESPidi
+## ESPidi - MIDI Hardware Unit
 
 **Открытая аппаратная платформа на ESP32-C3 для создания MIDI-контроллеров и расширения возможностей инструментов.**
 
