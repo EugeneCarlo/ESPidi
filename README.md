@@ -3,7 +3,9 @@
 **An open-source ESP32-C3 hardware platform for building MIDI controllers and expanding the capabilities of existing instruments.**
 
 ESPidi is a compact, ready-to-use MIDI platform based on the ESP32-C3.
-![ESPidi](Image/photo)
+
+![ESPidi](/Image/photo.jpg)
+
 You can use the included firmware, modify it, or write your own.
 
 ## Features & Configuration
