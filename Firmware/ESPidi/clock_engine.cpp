@@ -241,6 +241,11 @@ void clock_update() {
             bpmNeedFirstShow = true;
             windowTicks = 0;
             windowStartUs = 0;
+            // Длина нот считается входящими тиками: без Clock звучащие ноты не погаснут никогда.
+            // Clock пропал — останавливаемся, как по STOP.
+            if (arp.isEnabled()) arp.stop();
+            if (melSeq.isEnabled()) melSeq.stop();
+            if (songSeq.isEnabled()) songSeq.stop();
             ui_markDirty(4);
         }
     }

@@ -28,8 +28,8 @@ public:
     void onClockTick() override;
     void resetClockPhase() override;
     
-    bool handleNoteOn(uint8_t note, uint8_t velocity) override;
-    bool handleNoteOff(uint8_t note) override;
+    bool handleNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override;
+    bool handleNoteOff(uint8_t note, uint8_t channel) override;
     bool isEnabled() override { return params.enabled; }
     
     void play() override;

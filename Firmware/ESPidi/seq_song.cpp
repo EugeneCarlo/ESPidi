@@ -115,6 +115,7 @@ uint16_t SongSequencer::patternStepTicks(uint8_t divider) const {
 }
 
 void SongSequencer::advanceSongStep() {
+    stepsPlayed++;
     switch (params.mode) {
         case 0: currentStep = (currentStep + 1) % params.length; break;
         case 1: currentStep = (currentStep - 1 + params.length) % params.length; break;
@@ -131,7 +132,11 @@ void SongSequencer::advanceSongStep() {
         case 3: currentStep = random(params.length); break;
     }
 
-    if (currentStep == 0 && params.cycle == 0) {
+    // CYCLE = OFF: песня заканчивается, когда сыграна целиком. В PEND — по возвращении на первый
+    // шаг (проход туда и обратно), в остальных режимах — после LENGTH шагов: в RND шаг 0
+    // выпадает случайно и не может быть признаком конца.
+    bool finished = (params.mode == 2) ? (currentStep == 0) : (stepsPlayed >= params.length);
+    if (finished && params.cycle == 0) {
         enabled = false;
         stopAllNotes();
         resetClockPhase();
@@ -168,17 +173,20 @@ void SongSequencer::onClockTick() {
     if (!enabled) return;
     if (params.length == 0) return;
 
+    if (currentStep >= params.length) {
+        currentStep %= params.length;  // LENGTH уменьшили на ходу — сразу возвращаемся в границы
+    }
+
     SongStepParams& currentSongStep = steps[currentStep];
 
-    // MUTE / пауза: ждём pauseLength * stepTicks
-    if (currentSongStep.mute || currentSongStep.patternSlot == 0) {
+    // Пауза: ждём pauseLength × деление
+    if (currentSongStep.patternSlot == 0) {
         uint16_t need = (uint16_t)currentSongStep.pauseLength *
                         patternStepTicks(currentSongStep.divider);
         if (need < 1) need = 1;
 
         ticksIntoStep++;
         if (ticksIntoStep >= need) {
-            if (currentSongStep.mute) stopAllNotes();
             advanceSongStep();
         }
         return;
@@ -195,6 +203,19 @@ void SongSequencer::onClockTick() {
         } else {
             patternPlayLength = 0;
         }
+    }
+
+    // MUTE: шаг длится столько же, сколько его паттерн, но без звука —
+    // чтобы заглушение не сдвигало остальную песню по времени.
+    if (currentSongStep.mute) {
+        uint16_t need = (uint16_t)(patternPlayLength ? patternPlayLength : 1) *
+                        patternStepTicks(currentSongStep.divider);
+        ticksIntoStep++;
+        if (ticksIntoStep >= need) {
+            stopAllNotes();
+            advanceSongStep();
+        }
+        return;
     }
 
     if (patternPlayLength == 0) {
@@ -335,6 +356,7 @@ void SongSequencer::play() {
     resetClockPhase();
     direction = 1;
     currentStep = 0;
+    stepsPlayed = 0;
     patternPlayStep = 0;
     patternPlayLength = 0;
     currentPatternSlot = 0;
@@ -372,7 +394,9 @@ void SongSequencer::tap() {
 }
 
 void SongSequencer::clear() {
+    uint8_t keepSong = currentSong;  // очистка не меняет номер слота песни
     initArrays();
+    currentSong = keepSong;
     stopAllNotes();
     songDirty = true;
     scheduleGlobalSave();

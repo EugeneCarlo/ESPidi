@@ -36,7 +36,7 @@ ParamDef arpLeft[] = {
   { "BPM", &globalBpm, 40, 250, nullptr, 0 },
   { "MODE", &arp.params.mode, 0, 3, arpModeNames, 4 },
   { "DIV", &arp.params.division, 0, 5, divNames, 6 },
-  { "STRUM", &arp.params.strum, 0, 1, onOffNames, 2 },
+  { "THRU", &arp.params.strum, 0, 1, onOffNames, 2 },   // пропускать исходный сигнал на выход
   { "HOLD", &arp.params.hold, 0, 1, onOffNames, 2 }
 };
 
@@ -51,7 +51,7 @@ ParamDef seqLeft[] = {
   { "BPM", &globalBpm, 40, 250, nullptr, 0 },
   { "MODE", &melSeq.params.mode, 0, 3, seqModeNames, 4 },
   { "LENGTH", &melSeq.params.length, 1, 64, nullptr, 0 },
-  { "STRUM", &melSeq.params.strum, 0, 1, onOffNames, 2 },
+  { "THRU", &melSeq.params.strum, 0, 1, onOffNames, 2 },   // пропускать исходный сигнал на выход
   { "RE-REC", &melSeq.params.reRec, 0, 1, onOffNames, 2 }
 };
 
@@ -797,7 +797,7 @@ void ui_drawScreen() {
         
         display.setCursor(0, y);
         display.print("CH");
-        display.print(note.channel + 1);
+        display.print(note.channel);  // канал уже 1–16
         display.print(" ");
         
         display.setCursor(24, y);
@@ -1102,6 +1102,7 @@ void ui_handleEncoderPress(bool shortPress) {
     if (shortPress) {
       ui_setApp((AppType)menuPosition);
       uiState = UI_NAVIGATE;
+      scheduleGlobalSave();  // запомнить выбранное приложение
     }
     return;
   }

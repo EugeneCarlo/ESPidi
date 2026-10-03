@@ -26,9 +26,9 @@ struct App {
         else play();
     }
     virtual void tap() {}
-    virtual bool handleNoteOn(uint8_t note, uint8_t velocity) { return false; }
-    virtual bool handleNoteOff(uint8_t note) { return false; }
-    virtual bool handleCC(uint8_t number, uint8_t value) { return false; }
+    virtual bool handleNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) { (void)channel; return false; }
+    virtual bool handleNoteOff(uint8_t note, uint8_t channel) { (void)channel; return false; }
+    virtual bool handleCC(uint8_t number, uint8_t value, uint8_t channel) { (void)channel; return false; }
     virtual bool isEnabled() { return false; }
 };
 

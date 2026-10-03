@@ -23,17 +23,18 @@
 #define TAP_TIMEOUT_MS  2000
 #define SAVE_DELAY_MS 5000
 
-// Адреса EEPROM
-#define EEPROM_START        0
-#define EEPROM_APP_TYPE     EEPROM_START
-#define EEPROM_ARP_PARAMS   (EEPROM_APP_TYPE + sizeof(uint8_t))
+// Адреса EEPROM. Блоки идут подряд и не перекрываются; макросы с sizeof() раскрываются там,
+// где подключены arp.h / seq_mel.h / seq_song.h / settings.h (midi_handler.cpp).
+// При изменении раскладки увеличьте EEPROM_LAYOUT_VERSION: старые данные будут проигнорированы.
+#define EEPROM_LAYOUT_VERSION 0xE2
+#define EEPROM_VERSION      0   // байт версии раскладки
+#define EEPROM_APP_TYPE     1   // текущее приложение
+#define EEPROM_SEQ_DATA     2   // номер текущего паттерна
+#define EEPROM_SONG_DATA    3   // номер текущей песни
+#define EEPROM_ARP_PARAMS   4
 #define EEPROM_SEQ_PARAMS   (EEPROM_ARP_PARAMS + sizeof(ArpParams))
-#define EEPROM_SEQ_DATA     (EEPROM_SEQ_PARAMS + sizeof(MelSeqParams))
-#define EEPROM_SONG_PARAMS  (EEPROM_SEQ_DATA + 1)
-#define EEPROM_SONG_DATA    (EEPROM_SONG_PARAMS + sizeof(SongParams))
-#define EEPROM_SETTINGS     (EEPROM_SONG_DATA + 1)// EEPROM_SEQ_DATA хранит номер текущего паттерна (1 байт)
-// EEPROM_SONG_PARAMS хранит SongParams
-// EEPROM_SONG_DATA хранит номер текущей песни (1 байт)
+#define EEPROM_SONG_PARAMS  (EEPROM_SEQ_PARAMS + sizeof(MelSeqParams))
+#define EEPROM_SETTINGS     (EEPROM_SONG_PARAMS + sizeof(SongParams))
 
 #define VISIBLE_ROWS 3
 #define MAX_PATTERNS 64

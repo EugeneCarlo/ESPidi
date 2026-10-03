@@ -32,9 +32,9 @@ public:
     void begin() override;
     void update() override;
     
-    bool handleNoteOn(uint8_t note, uint8_t velocity) override;
-    bool handleNoteOff(uint8_t note) override;
-    bool handleCC(uint8_t number, uint8_t value) override;
+    bool handleNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override;
+    bool handleNoteOff(uint8_t note, uint8_t channel) override;
+    bool handleCC(uint8_t number, uint8_t value, uint8_t channel) override;
     bool isEnabled() override { return true; }
     
     void toggleNoteDisplay();
