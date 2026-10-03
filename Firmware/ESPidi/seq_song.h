@@ -18,6 +18,24 @@ struct SongStepParams {
     bool mute = false;          // MUTE шага
 };
 
+// Буфер паттерна для песни (ноты, CC, Tie, транспонирование шагов)
+struct SongPatternBuf {
+    int8_t notes[MAX_SEQ_STEPS][MAX_POLY];
+    uint8_t velocities[MAX_SEQ_STEPS][MAX_POLY];
+    uint8_t noteCount[MAX_SEQ_STEPS];
+    uint8_t ccNumber[MAX_SEQ_STEPS][MAX_CC_PER_STEP];
+    uint8_t ccValue[MAX_SEQ_STEPS][MAX_CC_PER_STEP];
+    uint8_t ccCount[MAX_SEQ_STEPS];
+    bool tie[MAX_SEQ_STEPS];
+    int8_t transpose[MAX_SEQ_STEPS];
+    uint8_t lengthTicks[MAX_SEQ_STEPS][MAX_POLY];  // записанные длины нот, 0 = по GATE
+    uint8_t gate = 127;  // GATE паттерна (из файла)
+    uint8_t length = 0;
+    uint8_t slot = 255;  // 255 = буфер пуст
+};
+
+#define SONG_MAX_SOUNDING (MAX_POLY * 2)  // звучащие ноты с учётом связок между шагами
+
 struct SongParams {
     uint8_t bpm = 120;
     uint8_t channel = 1;
@@ -36,13 +54,14 @@ public:
     void onClockTick() override;
     void resetClockPhase() override;
     
-    bool handleNoteOn(uint8_t note, uint8_t velocity) override { return false; }
-    bool handleNoteOff(uint8_t note) override { return false; }
-    bool handleCC(uint8_t number, uint8_t value) override { return false; }
+    bool handleNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override { (void)note; (void)velocity; (void)channel; return false; }
+    bool handleNoteOff(uint8_t note, uint8_t channel) override { (void)note; (void)channel; return false; }
+    bool handleCC(uint8_t number, uint8_t value, uint8_t channel) override { (void)number; (void)value; (void)channel; return false; }
     bool isEnabled() override { return enabled; }
     
     void play() override;
     void stop() override;
+    void patternChanged(uint8_t slot);  // файл паттерна перезаписан (1..64, 0 — все)
     void toggle() override;
     void tap() override;
     
@@ -102,40 +121,43 @@ private:
     uint8_t editStep = 0;
     int8_t direction = 1;
     uint16_t ticksIntoStep = 0;
-    unsigned long lastTapTime = 0;
+    uint16_t stepsPlayed = 0;    // сыграно шагов песни с последнего PLAY (для CYCLE = OFF)
     uint8_t currentSong = 0;
     bool songDirty = false;
     
-    // Буфер текущего играемого паттерна
-    int8_t patternBuffer_notes[MAX_SEQ_STEPS][MAX_POLY];
-    uint8_t patternBuffer_velocities[MAX_SEQ_STEPS][MAX_POLY];
-    uint8_t patternBuffer_noteCount[MAX_SEQ_STEPS];
-    uint8_t patternBuffer_ccNumber[MAX_SEQ_STEPS][MAX_CC_PER_STEP];
-    uint8_t patternBuffer_ccValue[MAX_SEQ_STEPS][MAX_CC_PER_STEP];
-    uint8_t patternBuffer_ccCount[MAX_SEQ_STEPS];
-    bool patternBuffer_tie[MAX_SEQ_STEPS];
-    int8_t patternBuffer_transpose[MAX_SEQ_STEPS];
-    uint8_t patternBufferLength = 0;
-    uint8_t patternBufferSlot = 255;  // 255 = буфер пуст
-    bool loadPatternToBuffer(uint8_t slot);
-    
+    // Два буфера паттерна: cur играет, nxt заранее загружается для следующего шага песни
+    // (в update(), вне обработки тактов), чтобы на стыке не читать флеш внутри тика.
+    SongPatternBuf bufA, bufB;
+    SongPatternBuf* cur = &bufA;
+    SongPatternBuf* nxt = &bufB;
+    bool loadPattern(SongPatternBuf& b, uint8_t slot);
+    bool ensureCurrentPattern(uint8_t slot);
+    uint8_t slotToPreload() const;
+    uint8_t startStep() const;
+    uint8_t plannedNext = 0;          // следующий шаг песни, выбирается при входе в шаг
+    int8_t plannedDir = 1;
+    bool startPending = false;        // первый такт после PLAY/Start начинает шаг сразу
+
     // Для отслеживания воспроизведения текущего паттерна
     uint8_t patternPlayStep = 0;      // текущий шаг внутри проигрываемого паттерна
     uint8_t patternPlayLength = 0;    // длина проигрываемого паттерна
-    uint8_t currentPatternSlot = 0;   // слот текущего проигрываемого паттерна
     
     // Для отслеживания Tie между шагами паттерна
     uint8_t lastPatternStep = 255;
     uint8_t lastPatternSlotForTie = 255;
-    int8_t lastPlayedNotesForTie[MAX_POLY];
+    int8_t lastPlayedNotesForTie[SONG_MAX_SOUNDING];  // звучащие ноты (их и гасим при остановке)
+    uint16_t lastPlayedTicksLeft[SONG_MAX_SOUNDING];  // сколько тактов звучать (GATE, длина ноты, Tie)
     uint8_t lastPlayedCountForTie = 0;
     
     void initArrays();
     void stopAllNotes();
+    void tickNoteLengths();
     void playPatternStep(uint8_t step, int8_t transpose);
     uint16_t patternStepTicks(uint8_t divider) const;
     void advanceSongStep();
-    void doPatternPulse();
+    void planNext();
+    void enterStep();
+    void nextSongStep();
 };
 
 #endif

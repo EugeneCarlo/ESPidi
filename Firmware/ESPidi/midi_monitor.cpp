@@ -37,22 +37,24 @@ void MidiMonitor::update() {
     }
 }
 
-bool MidiMonitor::handleNoteOn(uint8_t note, uint8_t velocity) {
+bool MidiMonitor::handleNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
     if (velocity == 0) {
         removeNote(note);
         return false;
     }
     
-    addNote(lastChannel, note, velocity);
+    addNote(channel, note, velocity);
     return false;
 }
 
-bool MidiMonitor::handleNoteOff(uint8_t note) {
+bool MidiMonitor::handleNoteOff(uint8_t note, uint8_t channel) {
+    (void)channel;
     removeNote(note);
     return false;
 }
 
-bool MidiMonitor::handleCC(uint8_t number, uint8_t value) {
+bool MidiMonitor::handleCC(uint8_t number, uint8_t value, uint8_t channel) {
+    (void)channel;
     addOrUpdateCC(number, value);
     sortCCs();
     return false;

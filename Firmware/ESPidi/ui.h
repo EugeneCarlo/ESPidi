@@ -41,6 +41,8 @@ void ui_handleEncoder(int delta);
 void ui_handleEncoderPress(bool shortPress);
 void ui_handleButton(uint8_t pin, bool longPress);
 void ui_drawScreen();
+void ui_present();
+bool ui_unsavedWarnActive();  // мигает SAVE: правки не сохранены, смену PTRN/SONG придержали  // отправить нарисованный кадр на дисплей (вне блокировки движка)
 void ui_markDirty(uint8_t flags = UI_DIRTY_FULL);
 
 String getNoteName(int8_t note);

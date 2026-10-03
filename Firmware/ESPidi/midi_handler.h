@@ -27,5 +27,14 @@ void midi_handleClock();
 void midi_handleStart();
 void midi_handleStop();
 void midi_handleContinue();
+void midi_handlePitchBend(byte channel, int bend);
+void midi_handleProgramChange(byte channel, byte number);
+void midi_handleAfterTouchChannel(byte channel, byte pressure);
+void midi_handleAfterTouchPoly(byte channel, byte note, byte pressure);
+void midi_handleSysEx(byte* data, unsigned size);
+void midi_handleTimeCode(byte data);
+void midi_handleSongPosition(unsigned beats);
+void midi_handleSongSelect(byte number);
+void midi_handleTuneRequest();
 
 #endif

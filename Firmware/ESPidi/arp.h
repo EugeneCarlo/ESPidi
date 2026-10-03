@@ -28,9 +28,10 @@ public:
     void onClockTick() override;
     void resetClockPhase() override;
     
-    bool handleNoteOn(uint8_t note, uint8_t velocity) override;
-    bool handleNoteOff(uint8_t note) override;
+    bool handleNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override;
+    bool handleNoteOff(uint8_t note, uint8_t channel) override;
     bool isEnabled() override { return params.enabled; }
+    bool passesThru() override { return !params.enabled || params.strum == 1; }  // остановлен или THRU
     
     void play() override;
     void stop() override;
@@ -64,7 +65,6 @@ private:
     int8_t direction = 1;
     uint8_t playingNote = 255;
     uint8_t lastNote = 255;
-    unsigned long lastTapTime = 0;
     
     uint16_t ticksIntoStep = 0;
     uint16_t gateTicksLeft = 0;

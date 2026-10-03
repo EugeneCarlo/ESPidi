@@ -14,6 +14,36 @@ extern SongSequencer songSeq;
 
 static uint8_t uiDirty = UI_DIRTY_FULL;
 
+// Несохранённые правки (решение автора): первый поворот PTRN/SONG номер не меняет, а мигает SAVE;
+// повторный поворот, пока SAVE мигает, переключает без сохранения. Щелчки одного непрерывного
+// поворота (паузы короче UNSAVED_TWIST_MS) — одна попытка: быстрым вращением правки не выбросить.
+static const unsigned long UNSAVED_WARN_MS = 2000;
+static const unsigned long UNSAVED_TWIST_MS = 300;
+static unsigned long unsavedWarnUntil = 0;
+static unsigned long unsavedLastTurn = 0;
+
+bool ui_unsavedWarnActive() {
+  return unsavedWarnUntil != 0 && (long)(millis() - unsavedWarnUntil) < 0;
+}
+
+static bool unsavedBlinkOn() {
+  return ui_unsavedWarnActive() && ((millis() / 250) % 2 == 0);
+}
+
+// true — поворот проглочен предупреждением, номер не меняем
+static bool unsavedGuard(bool dirty) {
+  if (!dirty) return false;
+  unsigned long now = millis();
+  if (ui_unsavedWarnActive() && now - unsavedLastTurn >= UNSAVED_TWIST_MS) {
+    unsavedWarnUntil = 0;  // повторный поворот после паузы — переключаем, правки выбрасываются
+    return false;
+  }
+  unsavedLastTurn = now;
+  unsavedWarnUntil = now + UNSAVED_WARN_MS;
+  uiDirty |= UI_DIRTY_FULL;
+  return true;
+}
+
 void ui_markDirty(uint8_t flags) {
   uiDirty |= flags;
 }
@@ -31,12 +61,13 @@ const char* onOffNames[] = { "OFF", "ON" };
 const char* seqModeNames[] = { "FWD", "REV", "PEND", "RND" };
 const char* cycleNames[] = { "OFF", "ON" };
 const char* pageNames[] = { "1", "2", "3", "4" };
+const char* ptrnSwitchNames[] = { "NOW", "NEXT", "END" };
 
 ParamDef arpLeft[] = {
   { "BPM", &globalBpm, 40, 250, nullptr, 0 },
   { "MODE", &arp.params.mode, 0, 3, arpModeNames, 4 },
   { "DIV", &arp.params.division, 0, 5, divNames, 6 },
-  { "STRUM", &arp.params.strum, 0, 1, onOffNames, 2 },
+  { "THRU", &arp.params.strum, 0, 1, onOffNames, 2 },   // пропускать исходный сигнал на выход
   { "HOLD", &arp.params.hold, 0, 1, onOffNames, 2 }
 };
 
@@ -51,7 +82,7 @@ ParamDef seqLeft[] = {
   { "BPM", &globalBpm, 40, 250, nullptr, 0 },
   { "MODE", &melSeq.params.mode, 0, 3, seqModeNames, 4 },
   { "LENGTH", &melSeq.params.length, 1, 64, nullptr, 0 },
-  { "STRUM", &melSeq.params.strum, 0, 1, onOffNames, 2 },
+  { "THRU", &melSeq.params.strum, 0, 1, onOffNames, 2 },   // пропускать исходный сигнал на выход
   { "RE-REC", &melSeq.params.reRec, 0, 1, onOffNames, 2 }
 };
 
@@ -62,7 +93,8 @@ static uint8_t saveTrigger = 0;  // фиктивное значение для �
 ParamDef seqRight[] = {
   { "CH", &melSeq.params.channel, 1, 16, nullptr, 0 },
   { "PTRN", &patternSlot, 1, 64, nullptr, 0 },
-  { "SAVE", &saveTrigger, 0, 0, nullptr, 0 },
+  { "SAVE", &saveTrigger, 0, 0, nullptr, 0 },  // сразу под PTRN: видно, когда SAVE мигает
+  { "SWAP", &settingsApp.params.ptrnSwitch, 0, 2, ptrnSwitchNames, 3 },  // смена PTRN во время игры
   { "GATE", &melSeq.params.gate, 0, 127, nullptr, 0 },
   { "SWING", &melSeq.params.swing, 0, 127, nullptr, 0 },
   { "RAND", &melSeq.params.randomness, 0, 127, nullptr, 0 },
@@ -200,8 +232,10 @@ static void drawColumn(ParamDef* params, int count, int colX, bool isLeft) {
       }
     } else {
       display.setCursor(colX, y);
-      display.setTextColor(isCursorMode ? SSD1306_BLACK : SSD1306_WHITE,
-                           isCursorMode ? SSD1306_WHITE : SSD1306_BLACK);
+      bool inv = isCursorMode;
+      if (isSaveParam && unsavedBlinkOn()) inv = !inv;  // несохранённые правки — SAVE мигает
+      display.setTextColor(inv ? SSD1306_BLACK : SSD1306_WHITE,
+                           inv ? SSD1306_WHITE : SSD1306_BLACK);
       // При CLKIN лейбл темпа = EXT
       if (strcmp(params[paramIndex].label, "BPM") == 0 && clock_isSourceExternal()) {
         display.print("EXT");
@@ -245,7 +279,57 @@ static void drawColumn(ParamDef* params, int count, int colX, bool isLeft) {
   }
 }
 
+// Отправка кадра на дисплей: только изменившиеся страницы (полосы по 8 строк пикселей).
+// Обычно меняется одна строка — бегущий шаг или значение параметра, — и вместо 512 байт
+// по I²C уходит 128, т. е. основной цикл занят в несколько раз меньше. Шина остаётся на 400 кГц.
+//
+// Кадр рисуется в буфер под блокировкой движка (ui_drawScreen), а по I²C уходит уже без неё
+// (ui_present): 4–14 мс передачи не задерживают такты.
+static uint8_t oledShadow[OLED_WIDTH * OLED_HEIGHT / 8];
+static bool oledShadowValid = false;
+static bool framePending = false;
+
+static void ui_flush() {
+  framePending = true;
+}
+
+void ui_present() {
+  if (!framePending) return;
+  framePending = false;
+  const uint8_t* buf = display.getBuffer();
+  Wire.setClock(400000);  // Adafruit после своих команд возвращает шину на 100 кГц
+  for (int page = 0; page < OLED_HEIGHT / 8; page++) {
+    const uint8_t* row = buf + page * OLED_WIDTH;
+    uint8_t* shadow = oledShadow + page * OLED_WIDTH;
+    if (oledShadowValid && memcmp(row, shadow, OLED_WIDTH) == 0) continue;
+    // Окно записи: одна страница, все столбцы (горизонтальная адресация задана при инициализации)
+    Wire.beginTransmission(oledAddr);
+    Wire.write((uint8_t)0x00);  // далее — команды
+    Wire.write((uint8_t)SSD1306_PAGEADDR);
+    Wire.write((uint8_t)page);
+    Wire.write((uint8_t)page);
+    Wire.write((uint8_t)SSD1306_COLUMNADDR);
+    Wire.write((uint8_t)0);
+    Wire.write((uint8_t)(OLED_WIDTH - 1));
+    Wire.endTransmission();
+    for (int i = 0; i < OLED_WIDTH; i += 32) {
+      Wire.beginTransmission(oledAddr);
+      Wire.write((uint8_t)0x40);  // далее — данные
+      Wire.write(row + i, 32);
+      Wire.endTransmission();
+    }
+    memcpy(shadow, row, OLED_WIDTH);
+  }
+  oledShadowValid = true;
+}
+
 void ui_drawScreen() {
+  static bool lastBlink = false;
+  bool blink = unsavedBlinkOn();
+  if (blink != lastBlink) {
+    lastBlink = blink;
+    uiDirty |= UI_DIRTY_FULL;
+  }
   // Нечего обновлять — не трогаем I2C (критично для MIDI clock)
   if (uiDirty == 0) {
     if (currentAppType == APP_MONITOR) {
@@ -267,8 +351,6 @@ void ui_drawScreen() {
   lastDraw = now;
   uiDirty = 0;
 
-  MIDI.read();
-
   display.clearDisplay();
   display.setTextSize(1);
 
@@ -277,8 +359,7 @@ void ui_drawScreen() {
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(5, 5);
     display.print(appNames[menuPosition]);
-    display.display();
-    MIDI.read();
+    ui_flush();
     return;
   }
   // HELP экран для Settings
@@ -295,8 +376,7 @@ void ui_drawScreen() {
     display.println("TAP+L_R: step edit");
     display.println("TAP+PLAY: rec mode");
     display.println("LONG PLAY: clear");
-    display.display();
-    MIDI.read();
+    ui_flush();
     return;
   }
   // STEP EDIT режим
@@ -438,8 +518,7 @@ void ui_drawScreen() {
       }
     }
 
-    display.display();
-    MIDI.read();
+    ui_flush();
     return;
   }
 
@@ -624,8 +703,7 @@ void ui_drawScreen() {
       }
     }
     
-    display.display();
-    MIDI.read();
+    ui_flush();
     return;
   }
 
@@ -797,7 +875,7 @@ void ui_drawScreen() {
         
         display.setCursor(0, y);
         display.print("CH");
-        display.print(note.channel + 1);
+        display.print(note.channel);  // канал уже 1–16
         display.print(" ");
         
         display.setCursor(24, y);
@@ -855,8 +933,7 @@ void ui_drawScreen() {
     }
   }
 
-  display.display();
-  MIDI.read();
+  ui_flush();
 }
 
 void ui_handleEncoder(int delta) {
@@ -1053,6 +1130,11 @@ void ui_handleEncoder(int delta) {
       return;
     }
     
+    if ((strcmp(param.label, "PTRN") == 0 && unsavedGuard(melSeq.isDirty())) ||
+        (strcmp(param.label, "SONG") == 0 && unsavedGuard(songSeq.isDirty()))) {
+      return;
+    }
+
     int oldValue = *param.value;
     *param.value = constrain(*param.value + delta, param.min, param.max);
 
@@ -1060,9 +1142,9 @@ void ui_handleEncoder(int delta) {
       clock_setBpm(*param.value);
     }
     
-    // При смене PTRN — загружаем паттерн
+    // При смене PTRN — загружаем паттерн (файл читается в основном цикле вне блокировки движка)
     if (strcmp(param.label, "PTRN") == 0 && *param.value != oldValue) {
-      melSeq.loadFromFile(*param.value - 1);
+      melSeq.requestPattern(*param.value - 1);
       scheduleGlobalSave();
     }
     
@@ -1073,8 +1155,9 @@ void ui_handleEncoder(int delta) {
       scheduleGlobalSave();
     }
     
-    // LENGTH — параметр паттерна/песни, не сохраняем в EEPROM
-    if (strcmp(param.label, "LENGTH") == 0) {
+    // LENGTH (и GATE секвенсора) — параметры паттерна/песни: сохраняются SAVE в файл, не в EEPROM
+    if (strcmp(param.label, "LENGTH") == 0 ||
+        (strcmp(param.label, "GATE") == 0 && currentAppType == APP_MEL_SEQ)) {
       if (currentAppType == APP_MEL_SEQ) {
         melSeq.markDirty();
       } else if (currentAppType == APP_SONG) {
@@ -1102,6 +1185,7 @@ void ui_handleEncoderPress(bool shortPress) {
     if (shortPress) {
       ui_setApp((AppType)menuPosition);
       uiState = UI_NAVIGATE;
+      scheduleGlobalSave();  // запомнить выбранное приложение
     }
     return;
   }
@@ -1153,7 +1237,8 @@ void ui_handleEncoderPress(bool shortPress) {
         }
         if (strcmp(col[realIndex].label, "SAVE") == 0) {
           if (currentAppType == APP_MEL_SEQ) {
-            melSeq.saveToFile(patternSlot - 1);
+            // Пока выбранный паттерн ждёт своего шага, играет (и редактируется) прежний — его и сохраняем
+            melSeq.saveToFile(melSeq.isSwitchPending() ? melSeq.getCurrentPattern() : patternSlot - 1);
           } else if (currentAppType == APP_SONG) {
             songSeq.saveToFile(songSlot - 1);
           }

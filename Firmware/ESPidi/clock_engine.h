@@ -8,6 +8,8 @@ extern uint8_t globalBpm;
 
 void clock_begin();
 void clock_update();
+bool clock_nextTickDue(unsigned long* dueUs);  // когда выдать следующий внутренний такт (micros)
+void clock_tap();  // нажатие TAP: темп по среднему из последних трёх интервалов
 
 void clock_onMidiClock();
 void clock_onMidiStart();

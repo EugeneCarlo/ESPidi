@@ -1,4 +1,5 @@
 #include "clock_engine.h"
+#include "config.h"
 #include "hardware.h"
 #include "app.h"
 #include "arp.h"
@@ -223,6 +224,30 @@ void clock_onMidiContinue() {
     }
 }
 
+// TAP: темп — по среднему из последних трёх интервалов между нажатиями. Первый интервал
+// задаёт темп сразу, следующие его уточняют; пауза дольше TAP_TIMEOUT_MS — счёт заново.
+void clock_tap() {
+    static const uint8_t N = 3;
+    static unsigned long lastTap = 0;
+    static unsigned long intervals[N];
+    static uint8_t count = 0, head = 0;
+    if (sourceExternal) return;
+    unsigned long now = millis();
+    if (lastTap > 0 && (now - lastTap) < TAP_TIMEOUT_MS) {
+        intervals[head] = now - lastTap;
+        head = (head + 1) % N;
+        if (count < N) count++;
+        unsigned long sum = 0;
+        for (uint8_t i = 0; i < count; i++) sum += intervals[i];
+        uint16_t bpm = (uint16_t)((60000UL * count + sum / 2) / sum);
+        clock_setBpm(constrain(bpm, 40, 250));
+    } else {
+        count = 0;
+        head = 0;
+    }
+    lastTap = now;
+}
+
 void clock_onLocalPlay(bool nowPlaying) {
     if (!transportEnabled) return;
     if (nowPlaying) {
@@ -230,6 +255,13 @@ void clock_onLocalPlay(bool nowPlaying) {
     } else {
         MIDI.sendRealTime(midi::Stop);
     }
+}
+
+// Момент следующего внутреннего такта — задача движка заводит на него точный таймер.
+bool clock_nextTickDue(unsigned long* dueUs) {
+    if (sourceExternal || !clockOutPhaseInit) return false;
+    *dueUs = nextClockOutUs;
+    return true;
 }
 
 void clock_update() {
@@ -241,6 +273,11 @@ void clock_update() {
             bpmNeedFirstShow = true;
             windowTicks = 0;
             windowStartUs = 0;
+            // Длина нот считается входящими тиками: без Clock звучащие ноты не погаснут никогда.
+            // Clock пропал — останавливаемся, как по STOP.
+            if (arp.isEnabled()) arp.stop();
+            if (melSeq.isEnabled()) melSeq.stop();
+            if (songSeq.isEnabled()) songSeq.stop();
             ui_markDirty(4);
         }
     }

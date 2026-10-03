@@ -6,6 +6,7 @@
 #include "hardware.h"
 #include "midi_handler.h"
 #include "clock_engine.h"
+#include "engine.h"
 
 extern MelodicSequencer melSeq;
 
@@ -33,7 +34,6 @@ void SongSequencer::initArrays() {
     currentStep = 0;
     patternPlayStep = 0;
     patternPlayLength = 0;
-    currentPatternSlot = 0;
     direction = 1;
     
     // Сбрасываем Tie-состояние
@@ -42,68 +42,97 @@ void SongSequencer::initArrays() {
     lastPlayedCountForTie = 0;
 }
 
-bool SongSequencer::loadPatternToBuffer(uint8_t slot) {
-    if (slot == patternBufferSlot) return true;  // уже загружен
-    if (slot == 0 || slot > 64) {
-        patternBufferSlot = 255;
-        patternBufferLength = 0;
-        return false;
-    }
-    
-    // Загружаем паттерн через getStepData — но нам нужен весь паттерн
-    // Временное решение: читаем файл напрямую
+bool SongSequencer::loadPattern(SongPatternBuf& buf, uint8_t slot) {
+    if (slot == buf.slot) return true;  // уже загружен
+    buf.slot = 255;
+    buf.length = 0;
+    if (slot == 0 || slot > 64) return false;
+
     char path[32];
     snprintf(path, sizeof(path), PATTERN_DIR "/pat_%02d.bin", slot - 1);
-    
-    if (!LittleFS.exists(path)) {
-        patternBufferSlot = 255;
-        patternBufferLength = 0;
-        return false;
-    }
-    
-    // Очищаем буферы перед загрузкой
-    memset(patternBuffer_notes, 0, sizeof(patternBuffer_notes));
-    memset(patternBuffer_velocities, 0, sizeof(patternBuffer_velocities));
-    memset(patternBuffer_noteCount, 0, sizeof(patternBuffer_noteCount));
-    memset(patternBuffer_ccNumber, 0, sizeof(patternBuffer_ccNumber));
-    memset(patternBuffer_ccValue, 0, sizeof(patternBuffer_ccValue));
-    memset(patternBuffer_ccCount, 0, sizeof(patternBuffer_ccCount));
-    memset(patternBuffer_tie, 0, sizeof(patternBuffer_tie));
-    memset(patternBuffer_transpose, 0, sizeof(patternBuffer_transpose));
-    
+    if (!LittleFS.exists(path)) return false;
+
     File f = LittleFS.open(path, "r");
-    if (!f) {
-        patternBufferSlot = 255;
-        patternBufferLength = 0;
-        return false;
-    }
-    
-    // Пропускаем заголовок (5 байт)
-    f.seek(5);
-    
-    // Читаем params чтобы получить length
+    if (!f) return false;
+
+    memset(&buf, 0, sizeof(buf));
+    f.seek(4);  // заголовок: MSEQ + версия
+    uint8_t version = 0;
+    f.read(&version, 1);
     MelSeqParams fileParams;
     f.read((uint8_t*)&fileParams, sizeof(MelSeqParams));
-    patternBufferLength = fileParams.length;
-    
-    // Читаем все данные
-    f.read((uint8_t*)patternBuffer_notes, sizeof(patternBuffer_notes));
-    f.read((uint8_t*)patternBuffer_velocities, sizeof(patternBuffer_velocities));
-    f.read((uint8_t*)patternBuffer_noteCount, sizeof(patternBuffer_noteCount));
-    f.read((uint8_t*)patternBuffer_ccNumber, sizeof(patternBuffer_ccNumber));
-    f.read((uint8_t*)patternBuffer_ccValue, sizeof(patternBuffer_ccValue));
-    f.read((uint8_t*)patternBuffer_ccCount, sizeof(patternBuffer_ccCount));
-    f.read((uint8_t*)patternBuffer_tie, sizeof(patternBuffer_tie));
-    f.read((uint8_t*)patternBuffer_transpose, sizeof(patternBuffer_transpose));
-    
+    f.read((uint8_t*)buf.notes, sizeof(buf.notes));
+    f.read((uint8_t*)buf.velocities, sizeof(buf.velocities));
+    f.read((uint8_t*)buf.noteCount, sizeof(buf.noteCount));
+    f.read((uint8_t*)buf.ccNumber, sizeof(buf.ccNumber));
+    f.read((uint8_t*)buf.ccValue, sizeof(buf.ccValue));
+    f.read((uint8_t*)buf.ccCount, sizeof(buf.ccCount));
+    f.read((uint8_t*)buf.tie, sizeof(buf.tie));
+    f.read((uint8_t*)buf.transpose, sizeof(buf.transpose));
+    if (version >= 2) {
+        f.seek(f.position() + sizeof(uint8_t) * MAX_SEQ_STEPS * MAX_POLY);  // каналы нот (песня играет на своём CH)
+        f.read((uint8_t*)buf.lengthTicks, sizeof(buf.lengthTicks));
+    }
     f.close();
-    patternBufferSlot = slot;
+    buf.gate = fileParams.gate;
+    buf.length = fileParams.length;
+    buf.slot = slot;
     return true;
 }
 
+// Паттерн для текущего шага: уже играет, заранее загружен (меняем буферы местами)
+// или, если не успели, читаем сейчас.
+bool SongSequencer::ensureCurrentPattern(uint8_t slot) {
+    if (cur->slot == slot) return true;
+    if (nxt->slot == slot) {
+        SongPatternBuf* t = cur;
+        cur = nxt;
+        nxt = t;
+        return true;
+    }
+    return loadPattern(*cur, slot);
+}
+
+// Шаг, с которого песня начинается по PLAY: в REV — последний (решение автора), иначе первый.
+uint8_t SongSequencer::startStep() const {
+    return (params.mode == 1 && params.length > 0) ? params.length - 1 : 0;
+}
+
+// Паттерн, который понадобится следующим и ещё не загружен (0 — ничего не нужно):
+// во время игры — для следующего шага песни, в остановке — для стартового, чтобы PLAY
+// не читал файл прямо в такте.
+uint8_t SongSequencer::slotToPreload() const {
+    uint8_t next = enabled ? plannedNext : startStep();
+    if (next >= MAX_SONG_STEPS) return 0;
+    uint8_t slot = steps[next].patternSlot;
+    if (slot == 0 || cur->slot == slot || nxt->slot == slot) return 0;
+    return slot;
+}
 
 void SongSequencer::update() {
-    // Timing — onClockTick
+    // Заранее загружаем паттерн следующего шага песни — здесь, вне обработки тактов.
+    // Вызывается без блокировки движка: файл читается в отдельный буфер (~12 мс), пока такты
+    // идут, а в буфер следующего паттерна копируется уже под блокировкой.
+    static SongPatternBuf loaded;
+    uint8_t slot;
+    {
+        EngineLock lock;
+        slot = slotToPreload();
+    }
+    if (slot == 0) return;
+    loaded.slot = 255;  // читать заново: файл могли пересохранить
+    if (!loadPattern(loaded, slot)) return;
+    EngineLock lock;
+    if (slotToPreload() == slot) {
+        *nxt = loaded;
+    }
+}
+
+// Файл паттерна перезаписан (slot как в шагах песни: 1..64; 0 — все): загруженную копию
+// больше не используем, update() перечитает.
+void SongSequencer::patternChanged(uint8_t slot) {
+    if (slot == 0 || bufA.slot == slot) bufA.slot = 255;
+    if (slot == 0 || bufB.slot == slot) bufB.slot = 255;
 }
 
 void SongSequencer::resetClockPhase() {
@@ -114,120 +143,146 @@ uint16_t SongSequencer::patternStepTicks(uint8_t divider) const {
     return clock_ticksPerDivision(divider);
 }
 
-void SongSequencer::advanceSongStep() {
+// Выбрать следующий шаг песни заранее (при входе в шаг), чтобы успеть загрузить его паттерн.
+void SongSequencer::planNext() {
+    int8_t dir = direction;
+    int next = currentStep;
     switch (params.mode) {
-        case 0: currentStep = (currentStep + 1) % params.length; break;
-        case 1: currentStep = (currentStep - 1 + params.length) % params.length; break;
+        case 0: next = (currentStep + 1) % params.length; break;
+        case 1: next = (currentStep - 1 + params.length) % params.length; break;
         case 2:
-            {
-                int nextStep = currentStep + direction;
-                if (nextStep >= params.length || nextStep < 0) {
-                    direction = -direction;
-                    nextStep = currentStep + direction;
-                }
-                currentStep = nextStep;
+            next = currentStep + dir;
+            if (next >= params.length || next < 0) {
+                dir = -dir;
+                next = currentStep + dir;
             }
+            if (next < 0 || next >= params.length) next = 0;
             break;
-        case 3: currentStep = random(params.length); break;
+        case 3: next = random(params.length); break;
     }
+    plannedNext = (uint8_t)next;
+    plannedDir = dir;
+}
 
-    if (currentStep == 0 && params.cycle == 0) {
+void SongSequencer::advanceSongStep() {
+    stepsPlayed++;
+    currentStep = plannedNext;
+    direction = plannedDir;
+
+    // CYCLE = OFF: песня заканчивается, когда сыграна целиком. В PEND — по возвращении на первый
+    // шаг (проход туда и обратно), в остальных режимах — после LENGTH шагов: в RND шаг 0
+    // выпадает случайно и не может быть признаком конца.
+    bool finished = (params.mode == 2) ? (currentStep == 0) : (stepsPlayed >= params.length);
+    if (finished && params.cycle == 0) {
         enabled = false;
         stopAllNotes();
         resetClockPhase();
         extern void ui_markDirty(uint8_t flags);
         ui_markDirty(1);
-        return;
     }
-
-    patternPlayStep = 0;
-    patternPlayLength = 0;
-    currentPatternSlot = 0;
-    lastPatternStep = 255;
-    lastPlayedCountForTie = 0;
-    ticksIntoStep = 0;
 }
 
-void SongSequencer::doPatternPulse() {
-    SongStepParams& currentSongStep = steps[currentStep];
-    playPatternStep(patternPlayStep, currentSongStep.transpose);
-    patternPlayStep++;
-
+// Начало шага песни: первый импульс паттерна звучит сразу, на этом же такте.
+void SongSequencer::enterStep() {
+    if (currentStep >= params.length) currentStep %= params.length;
+    SongStepParams& s = steps[currentStep];
+    ticksIntoStep = 0;
+    patternPlayStep = 0;
+    lastPatternStep = 255;
+    planNext();
+    if (s.patternSlot == 0) {
+        patternPlayLength = 0;  // пауза
+    } else {
+        patternPlayLength = ensureCurrentPattern(s.patternSlot) ? cur->length : 0;
+        if (!s.mute && patternPlayLength > 0) {
+            playPatternStep(0, s.transpose);
+        }
+    }
     extern void ui_markDirty(uint8_t flags);
     ui_markDirty(2);
+}
 
-    if (patternPlayStep >= patternPlayLength) {
-        stopAllNotes();
-        advanceSongStep();
-        lastPatternStep = 255;
-        lastPlayedCountForTie = 0;
-    }
+// Шаг песни отыграл полностью (включая последний шаг паттерна) — переходим к следующему.
+void SongSequencer::nextSongStep() {
+    stopAllNotes();
+    advanceSongStep();
+    if (enabled) enterStep();
 }
 
 void SongSequencer::onClockTick() {
     if (!enabled) return;
     if (params.length == 0) return;
 
-    SongStepParams& currentSongStep = steps[currentStep];
+    if (currentStep >= params.length) {
+        currentStep %= params.length;  // LENGTH уменьшили на ходу — сразу возвращаемся в границы
+    }
 
-    // MUTE / пауза: ждём pauseLength * stepTicks
-    if (currentSongStep.mute || currentSongStep.patternSlot == 0) {
-        uint16_t need = (uint16_t)currentSongStep.pauseLength *
-                        patternStepTicks(currentSongStep.divider);
-        if (need < 1) need = 1;
+    tickNoteLengths();
 
-        ticksIntoStep++;
-        if (ticksIntoStep >= need) {
-            if (currentSongStep.mute) stopAllNotes();
-            advanceSongStep();
-        }
+    if (startPending) {  // первый такт после PLAY/Start — шаг песни начинается сразу
+        startPending = false;
+        enterStep();
         return;
     }
 
-    // Паттерн
-    uint8_t slot = currentSongStep.patternSlot;
-    if (currentPatternSlot != slot) {
-        currentPatternSlot = slot;
-        patternPlayStep = 0;
-        ticksIntoStep = 0;
-        if (loadPatternToBuffer(slot)) {
-            patternPlayLength = patternBufferLength;
-        } else {
-            patternPlayLength = 0;
-        }
-    }
-
-    if (patternPlayLength == 0) {
-        ticksIntoStep++;
-        if (ticksIntoStep >= patternStepTicks(currentSongStep.divider)) {
-            advanceSongStep();
-        }
-        return;
-    }
-
+    SongStepParams& s = steps[currentStep];
+    uint16_t div = patternStepTicks(s.divider);
     ticksIntoStep++;
-    uint16_t need = patternStepTicks(currentSongStep.divider);
-    if (ticksIntoStep >= need) {
+
+    // Пауза, заглушённый (MUTE) или отсутствующий паттерн: просто ждём длительность шага.
+    // Пауза — пустой паттерн из PAUSE шагов; MUTE — выключенный паттерн, длится как паттерн.
+    if (s.patternSlot == 0 || s.mute || patternPlayLength == 0) {
+        uint16_t n = (s.patternSlot == 0) ? s.pauseLength : (patternPlayLength ? patternPlayLength : 1);
+        uint16_t need = n * div;
+        if (need < 1) need = 1;
+        if (ticksIntoStep >= need) nextSongStep();
+        return;
+    }
+
+    if (ticksIntoStep >= div) {
         ticksIntoStep = 0;
-        doPatternPulse();
+        patternPlayStep++;
+        if (patternPlayStep >= patternPlayLength) {
+            nextSongStep();
+        } else {
+            playPatternStep(patternPlayStep, s.transpose);
+            extern void ui_markDirty(uint8_t flags);
+            ui_markDirty(2);
+        }
     }
 }
 
+// Длина нот в песне — как в секвенсоре: GATE паттерна, записанная длина ноты, цепочка Tie.
+void SongSequencer::tickNoteLengths() {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < lastPlayedCountForTie; i++) {
+        if (lastPlayedTicksLeft[i] > 0) lastPlayedTicksLeft[i]--;
+        if (lastPlayedTicksLeft[i] == 0) {
+            MIDI.sendNoteOff(lastPlayedNotesForTie[i], 0, params.channel);
+            continue;
+        }
+        lastPlayedNotesForTie[n] = lastPlayedNotesForTie[i];
+        lastPlayedTicksLeft[n] = lastPlayedTicksLeft[i];
+        n++;
+    }
+    lastPlayedCountForTie = n;
+}
+
 void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
-    if (patternBufferSlot == 255 || step >= patternBufferLength) return;
+    if (cur->slot == 255 || step >= cur->length) return;
     
     // Если сменился паттерн — сбрасываем Tie
-    if (patternBufferSlot != lastPatternSlotForTie) {
+    if (cur->slot != lastPatternSlotForTie) {
         lastPatternStep = 255;
         lastPlayedCountForTie = 0;
-        lastPatternSlotForTie = patternBufferSlot;
+        lastPatternSlotForTie = cur->slot;
     }
     
     // Проверяем Tie с предыдущего шага
     bool hasTieFromPrev = false;
-    if (lastPatternStep != 255 && lastPatternStep < patternBufferLength) {
-        if (patternBuffer_tie[lastPatternStep]) {
-            uint8_t expectedPrevStep = (step == 0) ? patternBufferLength - 1 : step - 1;
+    if (lastPatternStep != 255 && lastPatternStep < cur->length) {
+        if (cur->tie[lastPatternStep]) {
+            uint8_t expectedPrevStep = (step == 0) ? cur->length - 1 : step - 1;
             if (lastPatternStep == expectedPrevStep) {
                 hasTieFromPrev = true;
             }
@@ -235,12 +290,12 @@ void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
     }
     
     // CC всегда проигрываются
-    for (int i = 0; i < patternBuffer_ccCount[step]; i++) {
-        MIDI.sendControlChange(patternBuffer_ccNumber[step][i], patternBuffer_ccValue[step][i], params.channel);
+    for (int i = 0; i < cur->ccCount[step]; i++) {
+        MIDI.sendControlChange(cur->ccNumber[step][i], cur->ccValue[step][i], params.channel);
     }
     
     // Если шаг пустой и Tie ON — оставляем предыдущие ноты звучать
-    if (patternBuffer_noteCount[step] == 0 && patternBuffer_tie[step]) {
+    if (cur->noteCount[step] == 0 && cur->tie[step]) {
         lastPatternStep = step;
         return;
     }
@@ -254,12 +309,13 @@ void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
     } else {
         // Tie: останавливаем только ноты, которых нет в текущем шаге
         uint8_t newLastPlayedCount = 0;
-        int8_t newLastPlayedNotes[MAX_POLY];
+        int8_t newLastPlayedNotes[SONG_MAX_SOUNDING];
+        uint16_t newTicksLeft[SONG_MAX_SOUNDING];
         
         for (int i = 0; i < lastPlayedCountForTie; i++) {
             bool found = false;
-            for (int j = 0; j < patternBuffer_noteCount[step]; j++) {
-                int16_t transposedNote = (int16_t)patternBuffer_notes[step][j] + transpose + patternBuffer_transpose[step];
+            for (int j = 0; j < cur->noteCount[step]; j++) {
+                int16_t transposedNote = (int16_t)cur->notes[step][j] + transpose + cur->transpose[step];
                 transposedNote = constrain(transposedNote, 0, 127);
                 if ((uint8_t)transposedNote == lastPlayedNotesForTie[i]) {
                     found = true;
@@ -269,7 +325,8 @@ void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
             if (!found) {
                 MIDI.sendNoteOff(lastPlayedNotesForTie[i], 0, params.channel);
             } else {
-                if (newLastPlayedCount < MAX_POLY) {
+                if (newLastPlayedCount < SONG_MAX_SOUNDING) {
+                    newTicksLeft[newLastPlayedCount] = lastPlayedTicksLeft[i];
                     newLastPlayedNotes[newLastPlayedCount++] = lastPlayedNotesForTie[i];
                 }
             }
@@ -278,14 +335,15 @@ void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
         lastPlayedCountForTie = newLastPlayedCount;
         for (int i = 0; i < newLastPlayedCount; i++) {
             lastPlayedNotesForTie[i] = newLastPlayedNotes[i];
+            lastPlayedTicksLeft[i] = newTicksLeft[i];
         }
     }
     
     // Играем ноты текущего шага
-    for (int i = 0; i < patternBuffer_noteCount[step]; i++) {
-        int8_t note = patternBuffer_notes[step][i];
+    for (int i = 0; i < cur->noteCount[step]; i++) {
+        int8_t note = cur->notes[step][i];
         if (note >= 0 && note < 128) {
-            int16_t transposedNote = (int16_t)note + transpose + patternBuffer_transpose[step];
+            int16_t transposedNote = (int16_t)note + transpose + cur->transpose[step];
             transposedNote = constrain(transposedNote, 0, 127);
             
             // Проверяем, не звучит ли уже эта нота из-за Tie
@@ -300,18 +358,24 @@ void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
             }
             
             if (!alreadyPlaying) {
-                MIDI.sendNoteOn((uint8_t)transposedNote, patternBuffer_velocities[step][i], params.channel);
+                MIDI.sendNoteOn((uint8_t)transposedNote, cur->velocities[step][i], params.channel);
             }
+            // Длина ноты — от этого шага: GATE паттерна, записанная длина, цепочка Tie
+            uint16_t len = MelodicSequencer::computeNoteLengthTicks(
+                step, i, cur->length, patternStepTicks(steps[currentStep].divider), cur->gate,
+                cur->tie, &cur->lengthTicks[0][0]);
             
             // Добавляем в список играющих нот (избегаем дубликатов)
             bool duplicate = false;
             for (int j = 0; j < lastPlayedCountForTie; j++) {
                 if (lastPlayedNotesForTie[j] == (uint8_t)transposedNote) {
                     duplicate = true;
+                    lastPlayedTicksLeft[j] = len;
                     break;
                 }
             }
-            if (!duplicate && lastPlayedCountForTie < MAX_POLY) {
+            if (!duplicate && lastPlayedCountForTie < SONG_MAX_SOUNDING) {
+                lastPlayedTicksLeft[lastPlayedCountForTie] = len;
                 lastPlayedNotesForTie[lastPlayedCountForTie++] = (uint8_t)transposedNote;
             }
         }
@@ -322,11 +386,13 @@ void SongSequencer::playPatternStep(uint8_t step, int8_t transpose) {
 
 
 void SongSequencer::stopAllNotes() {
-    for (int i = 0; i < 128; i++) {
-        MIDI.sendNoteOff(i, 0, params.channel);
+    // Гасим только свои звучащие ноты (раньше — NoteOff на все 128 нот + CC 123: ~120 мс,
+    // на которые останавливались такты, и обрыв чужих нот на том же канале).
+    for (int i = 0; i < lastPlayedCountForTie; i++) {
+        MIDI.sendNoteOff(lastPlayedNotesForTie[i], 0, params.channel);
     }
-    MIDI.sendControlChange(123, 0, params.channel);
-    patternBufferSlot = 255;
+    lastPlayedCountForTie = 0;
+    lastPatternStep = 255;
 }
 
 void SongSequencer::play() {
@@ -334,14 +400,16 @@ void SongSequencer::play() {
     enabled = true;
     resetClockPhase();
     direction = 1;
-    currentStep = 0;
+    currentStep = startStep();  // REV — с последнего шага, как секвенсор
+    stepsPlayed = 0;
     patternPlayStep = 0;
     patternPlayLength = 0;
-    currentPatternSlot = 0;
-    patternBufferSlot = 255;
+    // Буферы паттернов не сбрасываем: пересохранённый паттерн сбрасывается в patternChanged(),
+    // а паттерн первого шага уже подгружен в остановке (update)
     lastPatternStep = 255;
     lastPatternSlotForTie = 255;
     lastPlayedCountForTie = 0;
+    startPending = true;  // шаг 1 начнётся на первом же такте
     extern void ui_markDirty(uint8_t flags);
     ui_markDirty(1);
 }
@@ -350,7 +418,6 @@ void SongSequencer::stop() {
     if (!enabled) return;
     enabled = false;
     stopAllNotes();
-    MIDI.sendControlChange(123, 0, params.channel);
     resetClockPhase();
     extern void ui_markDirty(uint8_t flags);
     ui_markDirty(1);
@@ -362,17 +429,13 @@ void SongSequencer::toggle() {
 }
 
 void SongSequencer::tap() {
-    if (clock_isSourceExternal()) return;
-    unsigned long now = millis();
-    if (lastTapTime > 0 && (now - lastTapTime) < TAP_TIMEOUT_MS) {
-        uint16_t newBpm = 60000 / (now - lastTapTime);
-        clock_setBpm(constrain(newBpm, 40, 250));
-    }
-    lastTapTime = now;
+    clock_tap();
 }
 
 void SongSequencer::clear() {
+    uint8_t keepSong = currentSong;  // очистка не меняет номер слота песни
     initArrays();
+    currentSong = keepSong;
     stopAllNotes();
     songDirty = true;
     scheduleGlobalSave();
@@ -506,7 +569,6 @@ bool SongSequencer::loadFromFile(uint8_t slot) {
     ticksIntoStep = 0;
     patternPlayStep = 0;
     patternPlayLength = 0;
-    currentPatternSlot = 0;
     
     currentSong = slot;
     songDirty = false;

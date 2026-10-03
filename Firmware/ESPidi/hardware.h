@@ -6,9 +6,12 @@
 #include <Adafruit_SSD1306.h>
 #include <MIDI.h>
 #include "config.h"
+#include "midi_serial.h"
 
 extern Adafruit_SSD1306 display;
-extern MIDI_NAMESPACE::MidiInterface<MIDI_NAMESPACE::SerialMIDI<HardwareSerial>> MIDI;
+extern uint8_t oledAddr;
+extern MIDI_NAMESPACE::MidiInterface<MIDI_NAMESPACE::SerialMIDI<MidiSerial>> MIDI;
+extern MidiSerial midiSerial;
 
 void hw_initDisplay();
 void hw_initMIDI();
