@@ -1,0 +1,10 @@
+{
+  "espidi": 1,
+  "sketch": "ESPidiTemplate",
+  "firmware": "espidi/ESPidiTemplate.ino.bin",
+  "cover": "cover.png",
+  "summary": {
+    "en": "SDK example: buttons, MIDI out, settings, files, a long press on the encoder goes back to the HUB.",
+    "ru": "Пример SDK: кнопки, MIDI-выход, настройки, файлы, долгое нажатие энкодера — назад в HUB."
+  }
+}
